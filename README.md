@@ -1,127 +1,201 @@
-# Claude Fail-Closed (macOS)
+# macos-claude-failclosed
 
-让 Claude（Anthropic 官方）的流量**强制走本地代理**，并在**代理不可用时断网/杀进程**（fail-closed），
-同时**防止直连**，让 Anthropic 侧只看得到代理节点 IP。
+[![Platform: macOS 13+](https://img.shields.io/badge/platform-macOS%2013%2B-black?logo=apple)](#requirements)
+[![Shell: bash](https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white)](#)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![No TLS interception](https://img.shields.io/badge/TLS-no%20interception-informational)](#)
 
-面向 macOS + 本地 HTTP 代理（示例为 Clash Verge / mihomo 的混合端口）。
+Force **Anthropic (official) traffic through a local HTTP proxy**, and **fail closed** when that
+proxy is unavailable or bypassed — so **direct connections to Anthropic are impossible** and
+Anthropic only ever sees your proxy exit IP, not your real one.
 
-> 只处理 **官方 Anthropic 端点**；不涉及第三方中转域名（可自行加 Clash 规则）。
+Built for macOS with a local HTTP(S) proxy such as **Clash Verge / mihomo** (mixed port, e.g. `127.0.0.1:7897`).
 
 ---
 
-## 组成（4 层）
+## Why
 
-| 层 | 文件 | 作用 |
+A proxy *setting* is routing, not enforcement. If the proxy crashes, is turned off, or an app
+ignores proxy variables, traffic silently falls back to a **direct connection**. This toolkit
+closes that gap for Claude:
+
+- **Nothing reaches Anthropic except through your proxy** (network-level, process-independent).
+- **If the proxy dies, Anthropic access is cut** — no silent fallback.
+
+## How it works
+
+```
+Claude / Claude Code ──▶ 127.0.0.1:7897 ──▶ proxy node ──▶ api.anthropic.com   ✅
+        │
+        └── direct attempt ──▶ pf: block drop  (160.79.104.0/21, 2607:6bc0::/48)  ⛔
+
+proxy process gone / port down ──▶ claude-guard: kill Claude processes + notify  ⛔
+```
+
+Four independent layers:
+
+| Layer | Component | Role |
 |---|---|---|
-| L1 Clash 规则 | （需你在 Clash 里加，见下） | 让官方域名真的走节点，而不是 `DIRECT` |
-| L2 应用代理 | `claude-desktop-egress-proxy.mobileconfig` + Claude Code 的 `env` | 把 Claude 自己的代理钉死，不依赖系统代理 |
-| L3 pf 防火墙 | `claude-lock.pf` + `com.claude.pflock.plist` | 内核层封掉**直连**官方 IP（v4+v6），与代理状态无关 |
-| L4 进程守护 | `claude-guard.sh` + `com.claude.guard.plist` | 代理一消失，~0.5s 内强杀所有 Claude 进程并弹通知 |
+| **L1** | Clash rules *(you add)* | Route Anthropic domains to a real proxy node (not `DIRECT`) |
+| **L2** | `claude-desktop-egress-proxy.mobileconfig` + Claude Code `env` | Pin Claude's own traffic to the proxy, independent of the OS system proxy |
+| **L3** | `claude-lock.pf` + `com.claude.pflock.plist` | Kernel-level **block** of direct connections to Anthropic IPs (v4 **and** v6), enforced regardless of proxy state |
+| **L4** | `claude-guard.sh` + `com.claude.guard.plist` | If the proxy disappears, **kill all Claude processes** within ~0.5 s and post a macOS notification |
 
-设计要点：
-- **L3 是真正的"阻断"**：即使代理挂了、系统代理被关，直连官方 IP 也会被丢包。
-- **L4 是"兜底"**：Clash 崩溃/退出时，直接把 Claude 进程杀掉，避免任何直连尝试。
-- L1/L2 负责"让流量真的走代理"；L3 负责"没走成就断"。
+- **L3 is the guarantee.** Even if the proxy is down or the system proxy is disabled, any direct
+  connection to the published Anthropic ranges is dropped by `pf`.
+- **L4 is the backstop.** When Clash exits or crashes, Claude is terminated instead of retrying direct.
 
----
+## Requirements
 
-## 前提
+- macOS 13 or newer.
+- A local HTTP(S) proxy (default convention `127.0.0.1:7897`). SOCKS-only is **not** supported by Claude Code.
+- `sudo` (to write `/etc/pf.conf` and install LaunchDaemons).
 
-- macOS 13+。
-- 一个本地 HTTP(S) 代理（默认约定 `127.0.0.1:7897`）。Clash Verge 的"混合端口"即是。
-- 需要 `sudo`（写 `/etc/pf.conf`、装 LaunchDaemon）。
-- Claude Code 走后端时不支持 SOCKS，代理地址要用 `http://`。
-
----
-
-## 快速开始
+## Quick start
 
 ```bash
-# 1) 安装 L3 + L4（pf 封锁 + 进程守护 + pf 开机自启）
-cd ClaudeFailClosed
+git clone https://github.com/ggllzz04/macos-claude-failclosed.git
+cd macos-claude-failclosed
+
+# Install L3 + L4 (pf block + process guard + pf boot autostart)
 sudo ./install.sh
 
-# 2) 校验（默认静态检查；--online 会发真实请求）
+# Verify — static checks first, then real requests
 sudo ./verify.sh
 sudo ./verify.sh --online
 ```
 
-`install.sh` 会：
-- 装 `/usr/local/bin/claude-guard.sh` + `com.claude.guard.plist`（LaunchDaemon，开机自启）
-- 写 `/etc/pf.anchors/claude-lock` 并在 `/etc/pf.conf` 追加 anchor；`pfctl -E -f` 启用
-- 装 `com.claude.pflock.plist`（开机 `pfctl -E -f`，补系统 `com.apple.pfctl` 只加载不启用的缺口）
+Installed by `install.sh`:
 
-卸载：
+- `/usr/local/bin/claude-guard.sh` + `com.claude.guard.plist` — the process guard (LaunchDaemon, starts at boot).
+- `/etc/pf.anchors/claude-lock` (anchored from `/etc/pf.conf`) — the pf block, enabled with `pfctl -E -f`.
+- `com.claude.pflock.plist` — runs `pfctl -E -f /etc/pf.conf` at boot to complement Apple's
+  `com.apple.pfctl`, which loads but does not necessarily *enable* pf.
+
+Uninstall:
+
 ```bash
 sudo ./uninstall.sh
 ```
 
----
+## Configuration
 
-## L1：Clash 规则（手动，在 Clash Verge 里加）
+### L1 — Clash rules (manual)
 
-在订阅规则的**最前面**加（`<节点组>` 换成你的代理组名）：
+Prepend these to your rules (`<GROUP>` = your proxy selector group name):
+
 ```
-DOMAIN-SUFFIX,anthropic.com,<节点组>
-DOMAIN-SUFFIX,claude.ai,<节点组>
-DOMAIN-SUFFIX,claude.com,<节点组>
-DOMAIN-SUFFIX,claudeusercontent.com,<节点组>
-DOMAIN-SUFFIX,claudemcpcontent.com,<节点组>
+DOMAIN-SUFFIX,anthropic.com,<GROUP>
+DOMAIN-SUFFIX,claude.ai,<GROUP>
+DOMAIN-SUFFIX,claude.com,<GROUP>
+DOMAIN-SUFFIX,claudeusercontent.com,<GROUP>
+DOMAIN-SUFFIX,claudemcpcontent.com,<GROUP>
 ```
-> 若不强制这些域名走节点，L3 会把你"本该走代理"的请求也一起挡掉（因为 Clash 判 DIRECT 时的出口 IP 也在封锁段内）。
 
-## L2：把 Claude 自己的代理钉死
+> If these domains are not forced through a node, L3 will also drop your *legitimate* requests
+> (when Clash routes them `DIRECT`, the egress IP is inside the blocked range).
 
-**Claude Code**（`~/.claude/settings.json` 的 `env`）：
+### L2 — Pin Claude's own proxy
+
+**Claude Code** — in the `env` block of `~/.claude/settings.json`:
+
 ```json
 "HTTPS_PROXY": "http://127.0.0.1:7897",
 "HTTP_PROXY":  "http://127.0.0.1:7897",
 "NO_PROXY":    "localhost,127.0.0.1,::1"
 ```
-> 若你用第三方中转（`ANTHROPIC_BASE_URL`），把中转域名加进 `NO_PROXY` 可让它保持直连。
 
-**Claude Desktop**（托管配置，需 1.44121.1+）：
+> Using a third-party relay via `ANTHROPIC_BASE_URL`? Add the relay domain to `NO_PROXY` to keep it direct.
+
+**Claude Desktop** — managed configuration (requires Desktop 1.44121.1+):
+
 ```bash
 open ./claude-desktop-egress-proxy.mobileconfig
-# 再到「系统设置 → 通用 → 设备管理」确认安装
+# then confirm it in System Settings → General → Device Management
 ```
-> 该键为 `egressProxyUrl=http://127.0.0.1:7897`。**如果你的代理端口不是 7897，先用编辑器改这个文件里的端口。**
-> 钉死后 Desktop"连不上代理就失败、不回退直连"（原生 fail-closed）。
 
----
+> The key is `egressProxyUrl=http://127.0.0.1:7897`. **If your proxy port isn't 7897, edit the
+> port inside this file first.** Once pinned, Desktop fails instead of falling back to a direct
+> connection — native fail-closed.
 
-## 自定义
+### Guard tuning (environment variables)
 
-- **代理端口**：`claude-guard.sh`、`claude-desktop-egress-proxy.mobileconfig` 里都写着 `7897`，按需改。
-  （也可给守护设 `CLAUDE_GUARD_PORT` 环境变量。）
-- **守护参数**（环境变量）：`CLAUDE_GUARD_PORT`、`CLAUDE_GUARD_SAMPLE`、`CLAUDE_GUARD_DEBOUNCE`、
-  `CLAUDE_GUARD_GRACE`（启动宽限）、`CLAUDE_GUARD_KILL_NOTIFY_MIN`（通知限流）。
-  干跑：`CLAUDE_GUARD_DRYRUN=1 claude-guard.sh`（列出会杀的进程，不真杀）。
-- **封锁 IP 段**：见 `claude-lock.pf`，用的是 Anthropic **官方公布的固定段**（`160.79.104.0/21`、`2607:6bc0::/48`）。
-  官方地址若变更，请同步更新：https://platform.claude.com/docs/en/api/ip-addresses
+Set them in `com.claude.guard.plist` (or the shell when testing):
 
----
+| Variable | Default | Meaning |
+|---|---|---|
+| `CLAUDE_GUARD_PORT` | `7897` | Local proxy port to watch |
+| `CLAUDE_GUARD_SAMPLE` | `0.25` | Poll interval (seconds) |
+| `CLAUDE_GUARD_DEBOUNCE` | `2` | Consecutive "down" samples before acting |
+| `CLAUDE_GUARD_GRACE` | `0` | Startup grace period (seconds) |
+| `CLAUDE_GUARD_KILL_NOTIFY_MIN` | `20` | Min seconds between kill notifications |
 
-## 注意事项 / 限制
+Dry-run (prints what would be killed, kills nothing):
 
-- macOS 的 pf **不能按进程匹配**，所以按目标 IP 拦；官方段是 Anthropic 专用，已确认不在 Cloudflare。
-- 守护会**强杀 Claude 进程**（可能丢失未保存内容），且检测有 ~0.5s 竞态窗口。
-- 只覆盖列出的官方域名/IP；第三方中转、Bedrock/Vertex 等其它端点需另行配置。
-- `verify.sh --online` 会真实发起对官方真实 IP 的连接（预期被丢包）+ 一次经代理的请求（预期可达）。
-- 需要 `sudo`；**改 pf 有把自己网络弄断的风险**，请按 `install.sh` 分步并保留 `uninstall.sh`。
+```bash
+CLAUDE_GUARD_DRYRUN=1 ./claude-guard.sh
+```
 
-## 文件
+### Blocked ranges
+
+`claude-lock.pf` uses Anthropic's **published, fixed** ranges:
+
+- IPv4: `160.79.104.0/21`
+- IPv6: `2607:6bc0::/48`
+
+If Anthropic changes them, update the table — see <https://platform.claude.com/docs/en/api/ip-addresses>.
+
+## Verification
+
+`verify.sh` checks each layer:
+
+- **Static (no traffic):** pf enabled, anchor loaded, table contents, LaunchDaemon loaded,
+  guard script present, `7897` listening, Claude Code settings contain the proxy, guard dry-run.
+- **`--online` (real requests):** direct connection to the real Anthropic IPs (v4 and v6) must
+  **time out**, and a request **through the proxy** must succeed.
+
+Expected online output:
 
 ```
-claude-guard.sh                         进程守护（L4，含系统通知）
-com.claude.guard.plist                  守护 LaunchDaemon
-claude-lock.pf                          pf 封锁规则（L3）
-com.claude.pflock.plist                 pf 开机自启
-install.sh / uninstall.sh               安装 / 回滚
-verify.sh                               校验（--online 发真实请求）
-claude-desktop-egress-proxy.mobileconfig Desktop 代理托管配置（L2）
+OK   直连 v4 真实 IP 被阻断
+OK   直连 v6 真实 IP 被阻断
+OK   经代理可达（HTTP 401/403/404）
 ```
+
+## Limitations
+
+- macOS `pf` cannot match by process, so enforcement is **by destination IP**; the ranges above are
+  Anthropic-owned (not shared Cloudflare), so collateral blocking is minimal.
+- The guard **force-kills Claude** (unsaved work may be lost) and has a ~0.5 s detection window.
+- Only the listed official hosts are covered; third-party relays, Bedrock/Vertex, and other
+  provider endpoints need separate rules.
+- Changing `pf` can interrupt your own network. Run `install.sh` step by step and keep `uninstall.sh` handy.
+
+## Files
+
+```
+claude-guard.sh                           Process guard (L4) with macOS notifications
+com.claude.guard.plist                    Guard LaunchDaemon
+claude-lock.pf                            pf block rules (L3)
+com.claude.pflock.plist                   pf boot autostart
+install.sh / uninstall.sh                 Install / roll back
+verify.sh                                 Verification (--online sends real requests)
+claude-desktop-egress-proxy.mobileconfig  Claude Desktop proxy managed config (L2)
+```
+
+## 中文说明
+
+让 Claude（Anthropic 官方）的流量**强制走本地代理**，代理不可用时**断网并杀掉 Claude 进程**，
+从而**杜绝直连**——Anthropic 只会看到代理节点 IP，看不到你的真实 IP。
+
+- **L3（pf 封锁）是真正的保证**：即使代理挂了/系统代理被关，直连官方 IP 也会被内核丢包。
+- **L4（进程守护）是兜底**：Clash 崩溃/退出时 ~0.5 秒内强杀所有 Claude 进程并弹 macOS 通知。
+- L1/L2 负责"让流量真的走代理"。
+
+前提：macOS 13+、一个本地 HTTP 代理（默认 `127.0.0.1:7897`）、会用 `sudo`。
+安装 `sudo ./install.sh`，校验 `sudo ./verify.sh --online`，回滚 `sudo ./uninstall.sh`。
+L1/L2 需手动配置（见上文）。细节与限制见上。
 
 ## License
 
-MIT，见 `LICENSE`。按现状提供，无任何担保；请自行审阅后再在你自己的机器上运行。
+[MIT](LICENSE). Provided as-is, without warranty; review before running on your own machine.
