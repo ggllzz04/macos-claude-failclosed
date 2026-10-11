@@ -12,6 +12,12 @@
     <dict>
         <key>CLAUDE_GUARD_GRACE</key>
         <string>15</string>
+        <!-- TUN 或系统代理被关时，也视为“不可用”并立刻杀 Claude。
+             只想要其一，删掉对应那行即可；两者都要就都留着。 -->
+        <key>CLAUDE_GUARD_REQUIRE_TUN</key>
+        <string>1</string>
+        <key>CLAUDE_GUARD_REQUIRE_SYSPROXY</key>
+        <string>1</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>

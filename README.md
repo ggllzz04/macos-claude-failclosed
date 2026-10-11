@@ -122,13 +122,25 @@ open ./claude-desktop-egress-proxy.mobileconfig
 
 Set them in `com.claude.guard.plist` (or the shell when testing):
 
+Beyond the process/port check, the guard can also require that **TUN mode** and/or the **macOS
+system proxy** are actually active — so it fires *even while Clash is still running* but its
+proxy path was turned off.
+
 | Variable | Default | Meaning |
 |---|---|---|
 | `CLAUDE_GUARD_PORT` | `7897` | Local proxy port to watch |
+| `CLAUDE_GUARD_PROXY_HOST` | `127.0.0.1` | Proxy host the system proxy must point at |
+| `CLAUDE_GUARD_REQUIRE_TUN` | `0` | `1` = require TUN up, else treat as unavailable |
+| `CLAUDE_GUARD_TUN_GW` | `198.18.0.1` | TUN / fake-ip gateway address to look for |
+| `CLAUDE_GUARD_REQUIRE_SYSPROXY` | `0` | `1` = require the macOS system proxy to point at the proxy |
 | `CLAUDE_GUARD_SAMPLE` | `0.25` | Poll interval (seconds) |
 | `CLAUDE_GUARD_DEBOUNCE` | `2` | Consecutive "down" samples before acting |
 | `CLAUDE_GUARD_GRACE` | `0` | Startup grace period (seconds) |
 | `CLAUDE_GUARD_KILL_NOTIFY_MIN` | `20` | Min seconds between kill notifications |
+
+The bundled `com.claude.guard.plist` ships with `REQUIRE_TUN=1` **and** `REQUIRE_SYSPROXY=1`.
+Remove either line to relax — e.g. drop `REQUIRE_SYSPROXY` if you intentionally toggle the system
+proxy off (TUN still carries the traffic).
 
 Dry-run (prints what would be killed, kills nothing):
 
