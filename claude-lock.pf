@@ -1,0 +1,11 @@
+# /etc/pf.anchors/claude-lock
+# 只封 Anthropic 官方 IP 段（含 v4 与 v6），其余流量不受影响。
+# 官方公布的固定段：入站 160.79.104.0/23、出站 160.79.104.0/21（此处用 /21 超集）；
+# IPv6 入站 2607:6bc0::/48。Anthropic 不用 Cloudflare，无共享 IP 误伤。
+# 表同时含 v4/v6，下面一条 block 即同时封掉直连官方的 v4 和 v6。
+
+table <anthropic_net> persist { 160.79.104.0/21, 2607:6bc0::/48 }
+
+pass  out quick on lo0
+pass  out quick to 127.0.0.1
+block drop out quick to <anthropic_net>

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>PayloadContent</key>
+    <array>
+        <dict>
+            <key>PayloadType</key>
+            <string>com.anthropic.claudefordesktop</string>
+            <key>PayloadIdentifier</key>
+            <string>local.claude.desktop.proxy.payload</string>
+            <key>PayloadUUID</key>
+            <string>7C2A1F04-9B3E-4D6A-8E11-2F5A0C7D1B90</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+            <key>PayloadDisplayName</key>
+            <string>Claude Desktop egress proxy</string>
+            <key>egressProxyUrl</key>
+            <string>http://127.0.0.1:7897</string>
+        </dict>
+    </array>
+    <key>PayloadDisplayName</key>
+    <string>Claude Desktop Proxy (fail-closed)</string>
+    <key>PayloadIdentifier</key>
+    <string>local.claude.desktop.proxy</string>
+    <key>PayloadType</key>
+    <string>Configuration</string>
+    <key>PayloadUUID</key>
+    <string>3B8D5E21-4C7F-4A2B-9D66-8E1F0A3C5D72</string>
+    <key>PayloadVersion</key>
+    <integer>1</integer>
+</dict>
+</plist>
